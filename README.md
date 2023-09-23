@@ -1,7 +1,9 @@
 # Design Space Exploration of 3D Concrete Printed Bridges
 ![image](https://github.com/DennisHollanders/Design-Space-Exploration-of-3D-Concrete-Printed-Bridges/assets/67959863/c8cc8ccd-ee1d-465d-a3ca-382c2fe14db3)
 
-This repository contains the source code for a 3D concrete printing optimization tool, which combines Finite Element Analysis (FEA) and generative design techniques. Additionally, it includes a user-friendly dashboard for navigating the design space. This tool is designed to aid engineers and designers in optimizing 3D-printed concrete structures.
+This repository contains the source code for a 3D concrete printing optimization tool, which combines Finite Element Analysis (FEA) and generative design techniques. Additionally, it includes a user-guided dashboard for navigating the design space. This tool is designed to aid engineers and designers in the early design stage for 3D-printed concrete structures. The link to thesis can be found below 
+
+#### Link to thesis: 
 
 ## Content 
 - Thesis Abstract 
@@ -20,8 +22,6 @@ The results from the case showed that the “What to design?” could be answere
 Secondly the dashboard should provide information about the design space. Through the utilization of the parallel categories plot, information could be gained regarding the distribution of input variables and their impact on output performance. The results have shown that this provided basic information about domain functioning, showing that low values for domain 3 perform poor in general. Additionally, prestress seemed to be a positive addition to the structures functioning. The young modulus penalization tool behaves very case specific. While one penalization method occasionally outperforms the others, a slight preference is observed for non-penalized structures. The Construction constraint tool causes lower total strain energy performances, as expected, but does however proof not to be a postprocessing step; it distinctly alters the distribution of material around the constrained element.
 
 To conclude, the dashboard has shown to be able to address both research objectives, providing information on the “what and How to design?”. While the methodology applied showed to provide bridges tailored to the specific needs of 3D concrete printed bridges. Consequently, this underscores the potential of user-guided design space exploration as an effective tool for engineers and designers, navigating the complex design landscape of 3D concrete printed structures.
-
-#### Link to thesis: 
 
 ## Features
 - Grasshopper file (FEA/Optimization code implemented)
