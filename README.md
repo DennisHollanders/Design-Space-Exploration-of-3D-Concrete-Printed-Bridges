@@ -3,7 +3,7 @@
 
 This repository contains the source code for a 3D concrete printing optimization tool, which combines Finite Element Analysis (FEA) and generative design techniques. Additionally, it includes a user-guided dashboard for navigating the design space. This tool is designed to aid engineers and designers in the early design stage for 3D-printed concrete structures. The link to thesis can be found below 
 
-#### Link to thesis: 
+#### Link to thesis: <to be updated> 
 
 ## Content 
 - Thesis Abstract 
