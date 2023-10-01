@@ -1,1 +1,1 @@
-web: python3 Main_dashboard.py
+web: python3 Main_dashboard.heroku ps

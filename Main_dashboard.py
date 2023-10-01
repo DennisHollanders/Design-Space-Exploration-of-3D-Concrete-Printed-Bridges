@@ -11,8 +11,8 @@ app = dash.Dash(__name__, external_stylesheets=[dbc.themes.MINTY])
 current_directory = os.path.dirname(__file__)
 
 # Define the relative file paths to the JSON files
-INPUT_FILEPATH = os.path.join(current_directory, "Design_Space_Data_Input.json")
-OUTPUT_FILEPATH = os.path.join(current_directory, "Design_Space_Data_Output.json")
+INPUT_FILEPATH = os.path.join(current_directory, "data\Design_Space_Data_Input.json")
+OUTPUT_FILEPATH = os.path.join(current_directory, "data\Design_Space_Data_Output.json")
 
 #constant values/ Column names/file names/ Weights
 STEPSIZE_Y: int = 1
@@ -64,4 +64,4 @@ if __name__ == "__main__":
     Run main function and the server 
     """
     main()
-    app.run_server(debug=True)
+    app.run_server(debug=False)
