@@ -1,0 +1,611 @@
+# import required libraries
+import numpy as np
+import math
+from scipy.optimize import minimize
+from scipy.special import expit
+from scipy.optimize import root
+
+
+# create class bridge
+class Bridge:
+    # initialize the variables
+    def __init__(self, E, b, nodes, bars, dofs, Length, Angle, x):
+        # Store number of elements and nodes
+        self.ne = len(bars)
+        self.nn = len(nodes)
+        self.list_ne = range(self.ne)
+        self.list_nn = range(self.nn)
+
+        # Properties
+        self.young = E.astype(np.float64) # Young's modulus
+        self.Length = np.array(Length).astype(np.float64) # element lengths
+        self.x = x.astype(np.float64) # Sectional height
+        self.b = b # Sectional width
+        self.vmax_scale = 1 #Maximum volume scaling factor
+        self.PSforce = 1860 * A_prestress #Prestress force
+        self.Secant = False #Boolean flasg
+
+        # Geometry
+        self.nodes = nodes.astype(int) # Node x,y
+        self.bars = bars.astype(int) # Element-node indices
+        self.dofs = np.array([3 if item == 'beam' else 2 for item in dofs]) # DOFs 3 for beam 2 for truss
+        self.index_dofs = np.array([[0, 1, 2, 3, 4, 5] if item == 'beam' else [0, 1, 3, 4] for item in dofs])
+        self.Angle = np.array([np.radians(angle) for angle in Angle]).astype(np.float64) #Angle of each beam
+
+        # Section properties
+        self.inertia = np.zeros_like(self.x).astype(np.float64)
+        self.section = np.zeros_like(self.x).astype(np.float64)
+        self.resistance = np.zeros([self.ne, 6]).astype(np.float64)
+        self.vmax = np.sum(Length * init_height)
+
+        # Boundary conditions
+        self.support = np.ones([self.nn, 3]).astype(int)
+        self.distributed_load = np.zeros([self.ne, 1]).astype(np.float64)
+        self.support_forces = np.zeros([self.nn, 3]).astype(np.float64)
+
+        # DOF  properties
+        self.total_dofs = None
+        self.AUX = None
+        self.INDEX = None
+        self.dofs_per_node = None
+
+        # Run first function to find fixed geometrical and DOF properties
+        self.calculate_dofs()
+
+        # Containers for forces and displacements
+        self.Epoch = [] # List to store epochs
+        self.nodal_forces = np.zeros_like(self.AUX).astype(np.float64)
+        self.applied_forces = np.zeros_like(self.AUX).astype(np.float64)
+        self.local_displacement = np.zeros([self.ne, 6]).astype(np.float64)
+        self.center = np.zeros([self.ne])  # Centers of elements
+        self.strain = np.zeros([self.ne, 3]).astype(np.float64)
+        self.tension = np.zeros([self.ne]) # Tension or compression in each element
+        self.local_forces = np.zeros([self.ne, 6]).astype(np.float64)
+        self.stress = np.zeros([self.ne, 6]).astype(np.float64)
+        self.strain_energy = np.zeros([self.ne]).astype(np.float64)
+        self.global_nodal_forces = np.zeros([self.nn, 3]).astype(np.float64)
+        self.MSU = np.zeros([self.ne]) # Mean stress utilization
+
+    def calculate_dofs(self) -> None:
+        """
+        Calculate the DOFs (Degrees of freedom) for each node and element in the bridge structure.
+
+        This method computes the total number of DOFs, DOFs per node, and DOFs per element. It also prepares data structures
+        to store DOF indices for nodes and elements. These are only calculated once and stored in the object and used
+        throughout each iteration.
+
+        :return: None
+        """
+        # initialize some containers
+        AUX, INDEX, dpn, list_bar_to_node = [], [], [], []
+        start = 0
+
+        # FIND TOTAL DOFS BY FINDING AMOUNT PER NODE
+        for i in range(self.nn):
+            # Find indices of bars connected to current node
+            indices_ofbarstonode = np.where((self.bars[:, 0] == i) | (self.bars[:, 1] == i))[0]
+            list_bar_to_node.append(indices_ofbarstonode)
+            dpn.append(np.max(self.dofs[indices_ofbarstonode]))
+            self.dofs_per_node = np.array(dpn)
+        self.total_dofs = np.sum(self.dofs_per_node)
+        list_dofs = np.array(list(range(self.total_dofs)))
+
+        # Assign DOFs to each node =  aux
+        for elements in self.dofs_per_node:
+            end = start + elements
+            aux = list_dofs[start:end]
+            AUX.append(aux)
+            start = end
+        self.AUX = np.array(AUX)
+
+        # Assign DOFs to each element = INDEX
+        for i in range(self.ne):
+            index = [AUX[self.bars[i][0]], AUX[self.bars[i][1]]]
+            if self.dofs[i] == 2:
+                index = [sublist[:2] for sublist in index]
+            index = [j for i in index for j in i]  # sum two sublists This method is faster than sum(sublist+sublist)
+            INDEX.append(index)
+        self.INDEX = np.array(INDEX)
+
+        # Initialize nodal forces and displacements arrays
+        self.nodal_forces = np.zeros([self.total_dofs])
+        self.nodaldis = np.zeros([self.total_dofs])
+
+    def analysis(self, x: np.ndarray[float]) -> np.ndarray[float]:
+        """
+        Perform structural analysis on the bridge.
+
+        This method calculates the local and global element matrices, as well as the global stiffness matrix of the bridge
+        structure based on the given sectional properties and geometric information.
+        Then the direct stiffness method is imposed on that global stiffness matrix to derive the structural performance of the bridge.
+
+
+        :param x: Numpy array representing the sectional height of each bridge element.
+
+        :return: None
+
+        """
+        # Initialize containers
+        Local_element_matrices, Transformation_matrices, SUPPORT, Global_element_matrices, Kp = [], [], [], [], []
+
+        # Initialize matrices
+        matrix6 = np.zeros([6, 6])
+        Tmatrix6 = np.zeros([6, 6])
+        matrix4 = np.zeros([4, 4])
+        Tmatrix4 = np.zeros([4, 4])
+
+        # Initializing global stiffnes matrix
+        ss = np.zeros([self.total_dofs, self.total_dofs])
+        # Determine sectional properties (done within the loop toabe to manipulate during opti)
+        for i in self.list_ne:
+            self.inertia[i] = (b * x[i] ** 3) / 12
+            self.section[i] = x[i] * b
+            self.resistance[i, (0, 3)], self.resistance[i, (1, 4)], self.resistance[i, (2, 5)] = self.section[i], 2.4 * \
+                                                                                                                  self.section[
+                                                                                                                      i], \
+            self.inertia[i]
+            self.center[i] = (self.nodes[self.bars[i, 0], 1] + self.nodes[self.bars[i, 1], 1]) / 2
+            # DOFs for each element
+            # Element stiffness matrix
+            l = self.Length[i]
+            c1 = (self.section[i] * self.young[i]) / self.Length[i]
+            c2 = (self.inertia[i] * self.young[i]) / (self.Length[i] ** 3)
+
+            if self.dofs[i] == 2:  # Only translational DOFs
+
+                # Create local element matrix
+                matrix4[0] = [c1, 0, -c1, 0]
+                matrix4[1] = [0, 0, 0, 0]
+                matrix4[2] = [-c1, 0, c1, 0]
+                matrix4[3] = [0, 0, 0, 0]
+
+                # Calculate (co)Sine for local-global transformation
+                C = round(math.cos(self.Angle[i]), 5)
+                S = round(math.sin(self.Angle[i]), 5)
+
+                # Transformation matrix
+                Tmatrix4[0] = [C, S, 0, 0]
+                Tmatrix4[1] = [-S, C, 0, 0]
+                Tmatrix4[2] = [0, 0, C, S]
+                Tmatrix4[3] = [0, 0, -S, C]
+
+                # Store local matrices
+                Local_element_matrices.append(matrix4.copy())
+                Transformation_matrices.append(Tmatrix4.copy())
+
+            else:  # Translational and rotational DOFs
+
+                # Create local element matrix
+                matrix6[0] = [c1, 0, 0, -c1, 0, 0]
+                matrix6[1] = [0, 12 * c2, 6 * l * c2, 0, -12 * c2, 6 * l * c2]
+                matrix6[2] = [0, 6 * l * c2, c2 * 4 * (l ** 2), 0, c2 * -6 * l, c2 * 2 * (l ** 2)]
+                matrix6[3] = [-c1, 0, 0, c1, 0, 0]
+                matrix6[4] = [0, -12 * c2, -6 * l * c2, 0, 12 * c2, -6 * l * c2]
+                matrix6[5] = [0, c2 * 6 * l, c2 * 2 * (l ** 2), 0, -6 * l * c2, c2 * 4 * (l ** 2)]
+
+                # Calculate (co)Sine for local-global transformation
+                C = round(math.cos(self.Angle[i]), 5)
+                S = round(math.sin(self.Angle[i]), 5)
+
+                # Transformation matrix
+                Tmatrix6[0] = [C, S, 0, 0, 0, 0]
+                Tmatrix6[1] = [-S, C, 0, 0, 0, 0]
+                Tmatrix6[2] = [0, 0, 1, 0, 0, 0]
+                Tmatrix6[3] = [0, 0, 0, C, S, 0]
+                Tmatrix6[4] = [0, 0, 0, -S, C, 0]
+                Tmatrix6[5] = [0, 0, 0, 0, 0, 1]
+
+                # Store local matrices
+                Local_element_matrices.append(matrix6.copy())
+                Transformation_matrices.append(Tmatrix6.copy())
+            # Calculate global element matrix
+            global_element_matrix = np.matrix.transpose(Transformation_matrices[i]).dot(Local_element_matrices[i]).dot(
+                Transformation_matrices[i])
+            # Store global element matrix
+            Global_element_matrices.append(global_element_matrix)
+            # Add global element matrix to global stiffness matrix (ss)
+            ss[np.ix_(self.INDEX[i], self.INDEX[i])] += global_element_matrix
+
+        # Fixed support conditions
+        for i in self.list_nn:
+            support = self.support[i][:self.dofs_per_node[i]]
+            SUPPORT.append(support)
+        support_condition_per_dof = np.concatenate(SUPPORT)
+
+        # Set forces back to starting values
+        self.nodal_forces = self.applied_forces.copy()  # prevent adding the gravity/prestress of previous iteration to this iteration
+
+        # Set prestress to 0
+        F_prestress = np.zeros_like(self.nodal_forces).flatten()
+
+        # add prestress to the structure
+        if PS:  # Check if the element is a beam element
+            Center_of_Gravity = np.sum(self.center * x * Length) / np.sum(x * Length)
+            for i in Prestress_members:
+                if self.dofs[i] == 3:
+                    Psmoment = self.PSforce * np.cos(self.Angle[i]) * (Center_of_Gravity - self.center[i])  # Px*e
+                    Psvector = np.array(
+                        [self.PSforce, 0, -Psmoment, -self.PSforce, 0, Psmoment])  # -ps MOMENT ,PS MOMENT
+                else:
+                    Psvector = np.array([self.PSforce, 0, -self.PSforce, 0])
+                Psvector_global = np.matrix.transpose(Transformation_matrices[i]).dot(Psvector)
+                F_prestress[np.ix_(self.INDEX[i])] += Psvector_global
+
+        # Adds Distributed load to the end nodes of an element
+        eq_load_ele = np.zeros([self.ne, 6])
+        if ForceDL != 0:
+            for i in LoadMember:
+                l: float = Length[i]
+                Q: float = self.distributed_load[i, 0]
+                eq_load_ele[i, 1] = -Q * l / 2
+                eq_load_ele[i, 4] = -Q * l / 2
+                if math.pi / 2 < self.Angle[i] < math.pi * 3 / 2:
+                    eq_load_ele[i, 2] = Q * l ** 2 / 12
+                    eq_load_ele[i, 5] = -Q * l ** 2 / 12
+                else:
+                    eq_load_ele[i, 2] = -Q * l ** 2 / 12
+                    eq_load_ele[i, 5] = Q * l ** 2 / 12
+                self.nodal_forces[self.bars[i, 0], :] += eq_load_ele[i, :len(self.AUX[self.bars[i, 0]])]
+                self.nodal_forces[self.bars[i, 1], :] += eq_load_ele[i, 3:3 + len(self.AUX[self.bars[i, 1]])]
+
+        # Adds nodal gravity to the structure
+        if gravity:
+            for i in self.list_ne:
+                P = (-9.801 * density) * (
+                            self.section[i] / 1000000)  # Density*volume*9.81 * angle to split into Px and Py
+                S = round(math.sin(self.Angle[i]), 5)
+                Py = P * S
+                Gv1 = (Py * 0.5 * Length[i]) / (S * 1000) if S != 0 else 0
+                Gv2 = abs(Py - Gv1) * -1
+                if self.Angle[i] < math.pi:
+                    self.nodal_forces[self.bars[i, 0], 1] += Gv2
+                    self.nodal_forces[self.bars[i, 1], 1] += Gv1
+                else:
+                    self.nodal_forces[self.bars[i, 0], 1] += Gv1
+                    self.nodal_forces[self.bars[i, 1], 1] += Gv2
+
+        # Find free dofs and forces
+        free_dof = np.nonzero(support_condition_per_dof)[0].flatten()
+        Unrestrained_stiffness_matrix = ss[np.ix_(free_dof, free_dof)]
+        Total_forces = self.nodal_forces.flatten() + F_prestress  # you can apply a moment force to a non rotating element
+        Unconstrained_forces = Total_forces[free_dof]
+
+        # Solve for displacements in various sorts
+        Free_Displacements = np.linalg.solve(Unrestrained_stiffness_matrix, Unconstrained_forces)
+        Displacements_vector = self.nodaldis.astype(float).flatten()
+        Displacements_vector[free_dof] = Free_Displacements
+        Nodal_displacements_matrix = Displacements_vector.reshape(self.nn, self.dofs[0])  # change self.dofs
+        self.nodaldis = Nodal_displacements_matrix
+        Element_displacement_matrix = np.concatenate(
+            (Nodal_displacements_matrix[self.bars[:, 0]], Nodal_displacements_matrix[self.bars[:, 1]]), axis=1)
+
+        # Determine the reaction forces
+        self.nodal_force_global = ss.dot(Displacements_vector).reshape(self.nn, self.dofs[0])
+        self.reaction_forces = self.nodal_force_global[SupportPoints]
+
+        # Using the displacements solve for forces
+        for i in self.list_ne:
+            self.local_displacement[i, self.index_dofs[i]] = np.dot(Transformation_matrices[i],
+                                                                    Element_displacement_matrix[i])
+            self.local_forces[i, self.index_dofs[i]] = Local_element_matrices[i].dot(
+                self.local_displacement[i, self.index_dofs[i]])
+            # calculate the stresses
+            self.stress[i, self.index_dofs[i]] = self.local_forces[i, self.index_dofs[i]] / self.resistance[
+                i, self.index_dofs[i]]
+            # calculate if an element is in tension or compression
+            self.tension[i] = -1 if self.stress[i, 0] > 0 else 1
+            # calculate the strain energy per element
+            self.strain_energy[i] = np.sum(abs(self.stress[i, self.index_dofs[i]]) ** 2 * (
+                        self.Length[i] * self.resistance[i, self.index_dofs[i]]) / 2 * self.young[i])
+            # Calculate the stress utilization, depending on the normal force sign
+            if self.stress[i, 0] < 0:
+                self.MSU[i] = np.mean(abs(self.stress[i, self.index_dofs[i]] / Yieldstress[0, self.index_dofs[i]]))
+            else:
+                self.MSU[i] = np.mean(abs(self.stress[i, self.index_dofs[i]] / Yieldstress[1, self.index_dofs[i]]))
+        return self.strain_energy
+
+    def youngpen(self, x: np.ndarray[float]) -> np.ndarray[float]:
+        """
+        Adjust the Young's modulus of each bridge element based on stresses in the element
+
+        This method updates the Young's modulus of each element in the bridge structure based on the applied stress and the
+        chosen penalization type (Nefs (Linear) or Secant (Smooth)). It calculates the updated Young's modulus to represent either a
+        constant ratio of the original Young's modulus (Linear) or a secant modulus based on the Sigmoid stress-strain curve (Smooth).
+
+        :param x: Numpy array containing the sectional heights
+
+        :return: Updated Young's modulus values for each bridge element.
+        """
+        def F(x, a, b, t, c, s, d):
+            """
+            distance between a point on Linear curve and Smooth curve
+            :param x: x on the curve
+            :param a: x of the point location to be optimized towards
+            :param b: y of the point location to be optimized towards
+            :param t: Yield strength in tension
+            :param c: Yield strength in compression
+            :param s: Smooth function control variable, calculated in Smooth code
+            :param d: Smooth function control variable, calculated in Smooth code
+
+            :return: distance between functions
+            """
+            return (x - a) ** 2 + (equation(x, t, c, s, d) - b) ** 2
+
+        def deriv_equation(x, t, c, s, d):
+            """
+            Derivative of sigmoid function
+            """
+            return s * (c + t) * expit(s * (d + x)) * (1 - expit(s * (d - x)))  # result
+
+        def solve_distance(x, a, b, t, c, s, d):
+            """
+            Derivative of F, used to guide to optimization.
+            """
+            return 2 * (x - a) + 2 * (equation(x, t, c, s, d) - b) * deriv_equation(x, t, c, s, d)
+
+        def equation(x, t, c, s, d):
+            """
+            Standard Sigmoid function with yield stress bounds c,t
+            """
+            return -t + (c + t) * expit(-1 * s * (x - d))
+
+        # constant | for given material props
+        Yield_compression = Yield_C
+        Yield_tension = Yield_T
+        S = optimized_s
+        d = d_result
+
+        # Find corresponding force and strain
+        for i in self.list_ne:
+
+            # Linear penalization
+            if Penalization == 'Linear':
+                if self.tension[i] == 1:
+                    self.young[i] = Emin / Nefs_Ratio
+
+            # Smooth penalization
+            elif Penalization == 'Smooth':
+                # find stresses in elements
+                y_stress = self.stress[i, 0]
+                # Set bound to stress values
+                if y_stress > Yield_compression * 0.99:
+                    y_stress = Yield_compression * 0.99
+                elif y_stress < -Yield_tension:
+                    y_stress = Yield_tension * 0.99
+
+                # estimate strain
+                x_strain = y_stress / self.young[i]
+
+                # find strain on the curve given the stress
+                x_result = minimize(F, x_strain, args=(x_strain, y_stress, Yield_tension, Yield_compression,
+                                                       S, d), jac=solve_distance, method='TNC').x
+                # find the stress on the curve given the strain
+                y_result = equation(x_result, Yield_tension, Yield_compression, S, d)
+
+                # Derive the youngs modulus as the secant between stress and strain
+                self.young[i] = abs(y_result / x_result)
+            else:
+                self.young = E
+        return self.young
+
+    def objective(self, vmax_scale: float, x_percentage: np.ndarray[float], Max_allowable_deflection:float) -> float:
+        """
+        Objective function to calculate the differnce between the maximum occuring delfection and the maximum allowable deflection
+
+        This method calculates the maximum occurring deflection of the bridge for a given scaling factor vmax_scale of
+        the sectional areas. It then computes the difference between the maximum allowable deflection and the maximum
+        occurring deflection. The optimization process aims to minimize this difference.
+
+        :param vmax_scale: Scaling factor for the sectional areas
+        :param x_percentage: Percentage of the maximum volume each element is allowed to use.
+        :param Max_allowable_deflection: Maximum allowable deflection for the bridge.
+
+        :return: The difference between the maximum allowable deflection and the maximum occurring deflection.
+        """
+        if vmax_scale < 0:
+            return 1000  #Return a high value as a penalty for invalid scaling factors
+        x = x_percentage * self.vmax * vmax_scale / self.Length
+        # run the analysis with the sectional heights to find the deflection
+        bridge.analysis(x)
+        # derive the calculated deflection
+        Max_occuring_deflection = max(max(abs(self.nodaldis[:, 1])), max(abs(self.nodaldis[:, 0])))
+        return Max_allowable_deflection - Max_occuring_deflection # desired to be 0
+
+    def find_vmax(self, x_percentage: np.ndarray[float], vmax: float, Max_allowable_deflection: float) -> float:
+        """
+        Finds the optimal scaling factor vmax_scale to minimize deflection.
+
+        This method performs an optimization process to find the optimal scaling factor vmax_scale for the element sectional
+        areas that minimizes, preferably roots, the difference between the maximum allowable deflection and the maximum occurring deflection of the
+        bridge.
+
+        :param vmax_scale: Scaling factor for the sectional areas
+        :param x_percentage: Percentage of the maximum volume each element is allowed to use.
+        :param Max_allowable_deflection: Maximum allowable deflection for the bridge.
+
+        :return: The optimal maximum volume scaling factor
+            """
+        vmax_scale = 1 # Initial scaling factor
+        vmax_init = vmax_scale
+        result = root(self.objective, x0=vmax_init, args=(x_percentage, Max_allowable_deflection), method='hybr')
+        return result.x # Return the optimal scaling factor
+
+    def forced_members(self, StrainEi: np.ndarray[float], StrainE:float) -> np.ndarray[float]:
+        """
+        Set a minium sectional height to desired elements by fictively boosting their strain energy.
+
+        This method adjusts the strain energy of specific bridge elements to reach a certain amount of minimum printlayers.
+        This, while keeping the overall strain energy of the bridge the same.
+
+        :param StrainEi: Numpy array representing the strain energy of each bridge element.
+        :param StrainE: Total strain energy in the system
+
+        :return: Numpy array of the adjusted strain energy values.
+        """
+        # initalize variable
+        E_delta = 0
+
+        # run over the elements
+        for i in self.list_ne:
+            # continue for CC members
+            if i in Non_zero_members:
+                # Calculate the strain energy threshold
+                E_threshold = ManuP * StrainE * Length[i] / self.vmax
+                # if below the threshold update it to the threshhold
+                if StrainEi[i] < E_threshold:
+                    E_delta += E_threshold - StrainEi[i]
+                    StrainEi[i] = E_threshold
+        # calculate the reduction factor to retain energy in the system
+        E_scalar = ((StrainE - E_delta) / StrainE)
+
+        # apply reduces strain energy for all non CC members based on E_scalar
+        for i in self.list_ne:
+            if i not in Non_zero_members:
+                StrainEi[i] = StrainEi[i] * E_scalar
+        return StrainEi
+
+    def optimize_x(self, x:np.ndarray[float]) -> np.ndarray[float]:
+        """
+        Optimize the dimensions of bridge elements to meet strain energy and material constraints.
+
+        This method iteratively optimizes the dimensions (sectional height) of bridge elements to achieve a target strain energy
+            while considering material constraints and convergence criteria. The optimization process may also adjust the scaling factor
+            for element lengths (`vmax_scale`) if `Optimize_vmax` is enabled.
+
+            Parameters:
+            - x: Numpy array representing the initial dimensions (sectional heights) of bridge elements.
+
+            Returns:
+            - Numpy array: Optimized dimensions (sectional heights) of bridge elements.
+        """
+        # initialize later used variables
+        iteration = 0
+        x_new, x_damped = np.zeros(self.ne), np.zeros(self.ne)
+        converged = False
+
+        # Strain Energy optimization!
+        while iteration != Max_iterations and not converged:
+            # Do analysis
+            self.analysis(x)
+
+            # Update youngs modulus
+            if Youngpen:
+                self.youngpen(x)
+
+            # retrieve strain energy
+            StrainEi = self.strain_energy  # rotation = factor 3 higher than strainE therefore only contributing
+            StrainE = np.sum(StrainEi)
+
+            # Apply CC
+            if Forced_member_sizes:
+                StrainEi = self.forced_members(StrainEi, StrainE)
+
+            # update strain energy and store
+            StrainE = np.sum(StrainEi)
+            self.Epoch.append(StrainE)
+
+            # Calculate New section areas based on strain Energy!
+            x_percentage = (StrainEi / StrainE)
+            x_new = (x_percentage * self.vmax) / Length  # b taken out constant for all members
+
+            #check if the structure converged
+            if converging and iteration > 0:
+                # convergence stopping criterea
+                if abs(self.Epoch[iteration] - self.Epoch[iteration - 1]) < conv_tolerance_rate * self.Epoch[iteration]:
+                    print('converged in {} iterations'.format(iteration))
+                    converged = True
+
+                # calculate the damped version of x
+                x_damped = x + ((x_new - x)* (1 - damp_factor)) 
+                x = x_damped
+            else:
+                x = x_new
+            # x values below the threshold are updated to the threshhold
+            x[x <= x_threshold] = x_threshold
+            iteration += 1
+
+        # Vmax optimization!
+        vmax_scale = 1  # reference vmax_Scale so that it does not error when Optimizevmax = false
+        if Optimize_vmax:
+
+            # set youngs modulus back to normal properties
+            self.young = E
+
+            # find vmax_scale so that maximum allowable deflection = maximum occuring deflection
+            self.vmax_scale = self.find_vmax(x_percentage, self.vmax, Max_allowable_deflection)[0]
+
+            # update the sectional heights with vmax scale
+            x_vmax = x * self.vmax_scale
+
+            # Make sure CC member still have their desired minimum height
+            if Forced_member_sizes:
+                for i in Non_zero_members:
+                    if x_vmax[i] < ManuP:
+                        x_vmax[i] = ManuP
+            x = x_vmax
+        # Do final analysis with last value of x
+        bridge.analysis(x)
+
+        # Remove all members below the threshold values
+        x[x <= x_threshold * self.vmax_scale] = 0
+        return x
+
+
+# Element connectivity
+conv_tolerance_rate = 1e-5
+E = np.array(init_young)
+x = np.array(init_height)
+b = np.array(b)
+Prestress_members = np.array(PSmembers)
+nodes = np.array([[xc[index], y[index]] for index, _ in enumerate(y)], dtype="f")
+bars = np.array([[Bn1[index], Bn2[index]] for index, _ in enumerate(Bn1)])
+Non_zero_members2 = np.array(Non_zero_members)
+Length = np.array(Length2, dtype="f")
+Emin = E[0]
+Angle = np.array(Angles, dtype='f')
+
+# Create beam object
+bridge = Bridge(E, b, nodes, bars, DOFs, Length, Angle, x)
+
+# forces and boundary conditions
+distributed_load_1 = bridge.distributed_load
+distributed_load_1[LoadMember] = np.array([ForceDL * 1000])
+nodal_force_1 = bridge.applied_forces
+if bridge.dofs[Loadnode] == 2:
+    nodal_force_1[Loadnode] = (Forcevector[0] * 1000, Forcevector[1] * 1000)
+elif bridge.dofs[Loadnode] == 3:
+    nodal_force_1[Loadnode] = (Forcevector[0] * 1000, Forcevector[1] * 1000, 0)
+
+# Assign support conditions
+support_1 = bridge.support
+support_1[SupportPoints[0], (0, 1)] = 0
+support_1[SupportPoints[1], 1] = 0
+
+# Calculate yield stress vectors.
+Yield_compression = 30
+Yield_tension = 3
+Yield_shear = 0.1 * math.sqrt(Yield_compression)
+flexure_strength = 0.7 * math.sqrt(Yield_compression)
+Yieldstress = np.array(
+    [[Yield_compression, Yield_shear, flexure_strength, Yield_compression, Yield_shear, flexure_strength],
+     [Yield_tension, Yield_shear, flexure_strength, Yield_tension, Yield_shear, flexure_strength]])
+
+# Perform analysis
+bridge.analysis(x)
+
+# Perform optimization
+Heights = bridge.optimize_x(x)
+
+# Retrieve desired output from bridge class
+TC = bridge.tension
+Epoch = np.array(bridge.Epoch)
+Max_def = np.max(abs(bridge.nodaldis[:, 1]))
+Mean_dis = np.mean(bridge.nodaldis)
+SF_v = sum(abs(bridge.reaction_forces[:, 1]))
+SF_h = sum(abs(bridge.reaction_forces[:, 0]))
+Vmax_scale = bridge.vmax_scale
+Vmax = sum(Heights * Length * b)
+MPU = np.mean(Heights / printwidth)
+MSU = np.mean(bridge.MSU.astype(float))
+Forces = bridge.local_forces[:, 0]
+nodaldisplacements = bridge.nodaldis
