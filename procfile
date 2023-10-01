@@ -1,2 +1,0 @@
-#This file tells heroku what to run 
-web: python Main_dashboard.py
