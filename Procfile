@@ -1,1 +1,1 @@
-web: Main_dashboard.py
+web: gunicorn Main_dashboard:server
