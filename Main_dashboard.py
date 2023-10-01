@@ -6,6 +6,7 @@ from LayoutCallbacks import layout, callbacks, preprocess_data
 
 #initialize the dash application
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.MINTY])
+server = app.server
 
 # Get the current directory of the script
 current_directory = os.path.dirname(__file__)
