@@ -1,0 +1,1 @@
+web: python3 Main_dashboard.py
