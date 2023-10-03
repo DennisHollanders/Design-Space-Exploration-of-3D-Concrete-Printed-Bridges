@@ -6,8 +6,6 @@ from LayoutCallbacks import layout, callbacks, preprocess_data
 
 #initialize the dash application
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.MINTY])
-
-
 # Get the current directory of the script
 current_directory = os.path.dirname(__file__)
 
@@ -65,6 +63,6 @@ if __name__ == "__main__":
     Run main function and the server 
     """
     main()
-    server = app.server
-    #app.run_server(debug=False)
+    #server = app.server Used for heroku Comment out code below 
+    app.run_server(debug=False) 
     
