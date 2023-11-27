@@ -1,0 +1,17 @@
+This code is examplary for importing the relevant libraries into the rhinocode module.
+You can also browse to find the correct folder within rhino
+and copy your environment in there. At the time of writing the method below works
+a bit buggy, running it multiple times/opening/closing the laptop could make it eventually work.
+
+# There is something wrong with loading the pandas library this code should fix it. It is a known problem discussed on the developers page so it might be irrelevant at time of reading. The import Locale method should resolve this 
+
+# Below an example of the code to be ran to install libraries to the RhinoCode environment
+Example:
+
+The code to import:
+import locale
+locale.setlocale(locale.LC_ALL, 'en_US')
+
+
+# requirements: pandas,scipy, numpy
+# r: pandas == 2.0.3,scipy==1.11.1, numpy==1.25.1

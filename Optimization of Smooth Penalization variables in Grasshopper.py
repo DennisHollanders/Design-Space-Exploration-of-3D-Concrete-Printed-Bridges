@@ -2,7 +2,6 @@
 import numpy as np
 from scipy.optimize import minimize
 from scipy.special import expit
-from scipy.optimize import check_grad
 
 def equation(x: float, t:float, c:float, s:float , d:float ) -> float:
     """
