@@ -3,9 +3,9 @@
 ![frontpage](https://github.com/DennisHollanders/Design-Space-Exploration-of-3D-Concrete-Printed-Bridges/assets/67959863/7d495cf2-d7ec-4d46-8e57-3f79c426f202)
 
 
-This repository contains the source code for a 3D concrete printing optimization tool, which combines Finite Element Analysis (FEA) and generative design techniques. Additionally, it includes a user-guided dashboard for navigating the design space. This tool is designed to aid engineers and designers in the early design stage for 3D-printed concrete structures. The link to thesis can be found below 
+This repository contains the source code for a 3D concrete printing optimization tool, which combines Finite Element Analysis (FEA) and generative design techniques. Additionally, it includes a user-guided dashboard for navigating the design space. This tool is designed to aid engineers and designers in the early design stage for 3D-printed concrete structures. The link to the thesis can be found below.
 
-#### Link to thesis: <to be updated> 
+#### Link to thesis: <to be updated> (Thesis will be put online after graduating, a pdf version is uploaded to this repository)
 
 ## Content 
 - Thesis Abstract 
